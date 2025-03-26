@@ -3,12 +3,17 @@
 import React, { useState, useCallback } from 'react';
 import { Upload, Image as ImageIcon, Loader2 } from 'lucide-react';
 
+// Get API URL from environment variable or use fallback
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+console.log('Using API URL:', API_URL);
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [enhancedImage, setEnhancedImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -40,6 +45,7 @@ export default function Home() {
       };
       reader.readAsDataURL(file);
       setEnhancedImage(null);
+      setError(null);
     }
   };
 
@@ -47,23 +53,28 @@ export default function Home() {
     if (!file) return;
 
     setLoading(true);
+    setError(null);
     const formData = new FormData();
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://localhost:3000/upload', {
+      // Use the /api route which will be rewritten by Next.js config
+      const apiEndpoint = '/api/upload';
+      console.log(`Sending request to ${apiEndpoint}`);
+      const response = await fetch(apiEndpoint, {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error('Enhancement failed');
+        throw new Error(`Enhancement failed: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
       setEnhancedImage(data.url);
     } catch (error) {
       console.error('Error:', error);
+      setError(error instanceof Error ? error.message : 'Failed to enhance image');
     } finally {
       setLoading(false);
     }
@@ -124,6 +135,7 @@ export default function Home() {
                       e.stopPropagation();
                       setFile(null);
                       setPreview(null);
+                      setError(null);
                     }}
                     className="text-sm text-red-500 hover:text-red-600"
                   >
@@ -153,6 +165,12 @@ export default function Home() {
                     'Enhance Image'
                   )}
                 </button>
+              </div>
+            )}
+            
+            {error && (
+              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+                {error}
               </div>
             )}
           </div>

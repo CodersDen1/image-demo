@@ -3,7 +3,7 @@ module.exports = {
       {
         name: "frontend",
         script: "npm",
-        args: "run dev -- --port 3333",
+        args: "run start",
         cwd: "./frontend",
         watch: true,
         env: {
@@ -16,7 +16,7 @@ module.exports = {
       {
         name: "backend",
         script: "python",
-        args: "-m uvicorn main:app --host 0.0.0.0 --port 4444 --reload",
+        args:  "-c 'source myenv/bin/activate && python -m uvicorn main:app --host 0.0.0.0 --port 3000 --reload'",
         cwd: "./backend",
         watch: true,
         env: {

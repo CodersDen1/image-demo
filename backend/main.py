@@ -10,9 +10,15 @@ from dotenv import load_dotenv
 import cloudinary
 import cloudinary.uploader
 import openai
+import os
+from fastapi.middleware.cors import CORSMiddleware
+
+# Get allowed origins from environment variable or use default for development
+
 
 # Load environment variables from .env
 load_dotenv()
+
 
 # Configure logging for production
 logging.basicConfig(
