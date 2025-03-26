@@ -21,24 +21,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Cloudinary configuration
+# Cloudinary config
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
     api_key=os.environ.get("CLOUDINARY_API_KEY"),
     api_secret=os.environ.get("CLOUDINARY_API_SECRET")
 )
 
-# OpenAI configuration
+# OpenAI config
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Create FastAPI app
 app = FastAPI(
-    title="Hybrid Image Enhancer with Warm Filter",
-    description="Enhances images using brightness thresholds, optional OpenAI detection, gamma/CLAHE, smoothing, warm filter, and Cloudinary upload.",
-    version="4.0.0"
+    title="Hybrid Image Enhancer",
+    description="Enhances images using brightness thresholds, optional OpenAI detection, gamma/CLAHE, smoothing, and Cloudinary upload.",
+    version="3.0.0"
 )
 
-# Enable CORS (customize allowed origins in production)
+# CORS (customize in production)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,20 +79,6 @@ async def detect_darkness_with_openai(brightness: float) -> bool:
         # Fallback to threshold-based logic if OpenAI fails
         return brightness < 100
 
-def apply_warm_filter(image: np.ndarray) -> np.ndarray:
-    """
-    Apply a warm filter to the image by enhancing red tones and slightly reducing blue.
-    The warm factor can be controlled via the environment variable WARM_FACTOR.
-    """
-    warm_factor = float(os.environ.get("WARM_FACTOR", 1.1))  # Default warm factor 1.1
-    b, g, r = cv2.split(image)
-    # Increase red channel intensity and slightly reduce blue
-    r = np.clip(r * warm_factor, 0, 255).astype(np.uint8)
-    b = np.clip(b * 0.9, 0, 255).astype(np.uint8)
-    warm_image = cv2.merge((b, g, r))
-    logger.debug(f"Applied warm filter with factor {warm_factor}")
-    return warm_image
-
 def hybrid_enhancement(
     image: np.ndarray, 
     brightness: float,
@@ -101,42 +87,51 @@ def hybrid_enhancement(
 ) -> np.ndarray:
     """
     Apply different gamma and CLAHE settings based on brightness:
-      - Very dark (< low_brightness_threshold): strong gamma & strong CLAHE.
-      - Moderate brightness: mild gamma & mild CLAHE.
-      - Bright (> high_brightness_threshold): skip gamma/CLAHE.
-    Then optionally apply bilateral smoothing, a final brightness/contrast tweak,
-    and a warm filter to add warmth to dark images.
+      - Very dark (< low_brightness_threshold): strong gamma & strong CLAHE
+      - Moderate brightness: mild gamma & mild CLAHE
+      - Bright (> high_brightness_threshold): skip gamma/CLAHE
+    Then optionally apply bilateral smoothing and a final brightness/contrast tweak.
     """
 
-    # Load smoothing parameters from environment variables
+    # Load from environment or use defaults
     apply_smoothing = os.environ.get("APPLY_SMOOTHING", "true").lower() == "true"
     bilateral_d = int(os.environ.get("BILATERAL_D", 9))
     bilateral_sigma_color = float(os.environ.get("BILATERAL_SIGMA_COLOR", 75))
     bilateral_sigma_space = float(os.environ.get("BILATERAL_SIGMA_SPACE", 75))
 
-    # Decide gamma & CLAHE settings based on brightness thresholds
+    # Decide gamma & CLAHE clip limit
     if brightness < low_brightness_threshold:
+        # Heavily enhance
         gamma_value = 2.0
         clahe_clip_limit = 2.0
     elif brightness < high_brightness_threshold:
+        # Mild enhancement
         gamma_value = 1.2
         clahe_clip_limit = 1.0
     else:
-        gamma_value = None  # Skip gamma
-        clahe_clip_limit = None  # Skip CLAHE
+        # Already bright, skip gamma/CLAHE
+        gamma_value = None
+        clahe_clip_limit = None
 
     # --- Step 1: Gamma Correction ---
     if gamma_value:
         inv_gamma = 1.0 / gamma_value
-        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+        table = np.array([
+            ((i / 255.0) ** inv_gamma) * 255
+            for i in range(256)
+        ]).astype("uint8")
         image = cv2.LUT(image, table)
         logger.debug(f"Applied gamma correction: {gamma_value}")
 
-    # --- Step 2: CLAHE (if applicable) ---
+    # --- Step 2: CLAHE (if clip limit is set) ---
     if clahe_clip_limit:
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+
+        clahe = cv2.createCLAHE(
+            clipLimit=clahe_clip_limit, 
+            tileGridSize=(8, 8)
+        )
         l_enhanced = clahe.apply(l)
         lab_enhanced = cv2.merge((l_enhanced, a, b))
         image = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
@@ -144,57 +139,61 @@ def hybrid_enhancement(
 
     # --- Step 3: Optional Bilateral Smoothing ---
     if apply_smoothing:
-        image = cv2.bilateralFilter(image, d=bilateral_d, sigmaColor=bilateral_sigma_color, sigmaSpace=bilateral_sigma_space)
+        image = cv2.bilateralFilter(
+            image,
+            d=bilateral_d,
+            sigmaColor=bilateral_sigma_color,
+            sigmaSpace=bilateral_sigma_space
+        )
         logger.debug("Applied bilateral filter for smoothing.")
 
     # --- Step 4: Final Brightness/Contrast Tweak ---
-    alpha = float(os.environ.get("FINAL_ALPHA", 1.05))  # Contrast control
-    beta = float(os.environ.get("FINAL_BETA", 10.0))     # Brightness control
+    # Subtle linear shift to ensure a clean, bright result
+    alpha = float(os.environ.get("FINAL_ALPHA", 1.05))  # contrast
+    beta = float(os.environ.get("FINAL_BETA", 10.0))    # brightness
     image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
     logger.debug(f"Applied final brightness/contrast tweak: alpha={alpha}, beta={beta}")
-
-    # --- Step 5: Apply Warm Filter ---
-    apply_warm = os.environ.get("APPLY_WARM_FILTER", "true").lower() == "true"
-    if apply_warm:
-        image = apply_warm_filter(image)
 
     return image
 
 @app.post("/upload")
 async def upload_image(file: UploadFile = File(...)):
     """
-    1. Reads an uploaded image.
-    2. Calculates brightness.
-    3. Optionally uses OpenAI to determine if enhancement is needed.
-    4. Applies a hybrid enhancement (with gamma/CLAHE/smoothing and warm filter) if necessary.
-    5. Uploads the final image to Cloudinary.
-    6. Returns the Cloudinary URL.
+    1. Read the image from the uploaded file.
+    2. Calculate brightness.
+    3. (Optional) Use OpenAI to confirm if it's dark enough for enhancement.
+    4. Apply a 'hybrid' enhancement approach based on brightness thresholds.
+    5. Upload the final image to Cloudinary.
+    6. Return the Cloudinary URL.
     """
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
 
     try:
-        # Read and decode the image
+        # Read and decode image
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image data.")
 
-        # Calculate brightness
+        # 1) Calculate brightness
         brightness = calculate_brightness(img)
-        logger.info(f"Calculated brightness: {brightness:.2f}")
+        logger.info(f"Brightness: {brightness:.2f}")
 
-        # Use OpenAI detection if enabled, otherwise fallback to threshold logic
+        # 2) Check if we want to use OpenAI
         use_openai_detection = os.environ.get("USE_OPENAI_DETECTION", "false").lower() == "true"
+        needs_enhancement = False
         if use_openai_detection:
+            # Ask OpenAI if the image is dark
             needs_enhancement = await detect_darkness_with_openai(brightness)
         else:
-            needs_enhancement = brightness < 140.0
+            # Simple threshold fallback
+            needs_enhancement = (brightness < 140.0)  # You can tweak this
 
-        # Apply hybrid enhancement if needed
+        # 3) Apply hybrid enhancement if needed, else skip
         if needs_enhancement:
-            logger.info("Enhancement required. Applying hybrid enhancement.")
+            logger.info("Enhancement required. Applying hybrid approach.")
             processed_img = hybrid_enhancement(
                 image=img,
                 brightness=brightness,
@@ -202,16 +201,16 @@ async def upload_image(file: UploadFile = File(...)):
                 high_brightness_threshold=float(os.environ.get("HIGH_BRIGHTNESS_THRESHOLD", 140.0))
             )
         else:
-            logger.info("Enhancement not required. Returning original image.")
+            logger.info("No enhancement required. Returning original image.")
             processed_img = img
 
-        # Encode processed image to JPEG
+        # 4) Encode to JPEG
         success, buffer = cv2.imencode(".jpg", processed_img)
         if not success:
             raise HTTPException(status_code=500, detail="Failed to encode processed image.")
         image_bytes = buffer.tobytes()
 
-        # Upload to Cloudinary
+        # 5) Upload to Cloudinary
         folder = os.environ.get("CLOUDINARY_FOLDER", "enhanced_images")
         upload_result = cloudinary.uploader.upload(
             io.BytesIO(image_bytes),
