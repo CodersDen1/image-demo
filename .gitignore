@@ -1,0 +1,33 @@
+# General
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.env
+.env.*
+
+# FastAPI (Python backend)
+instance/
+*.log
+*.sqlite3
+*.db
+*.pot
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Vite ReactJS (Frontend)
+node_modules/
+dist/
+*.log
+*.cache
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+
+# OS generated files
+.DS_Store
+Thumbs.db
